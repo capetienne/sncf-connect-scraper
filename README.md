@@ -43,6 +43,30 @@ best = asyncio.run(s.auto_split_search('Brest', 'Bourg-en-Bresse', '2026-07-11',
 ```
 Ou ouvrir le notebook : `jupyter lab comparateur_sncf.ipynb`.
 
+## En ligne de commande (CLI)
+```bash
+# Comparer une plage de dates, avec Carte Avantage Jeune, journée complète
+python sncf_scraper.py Brest Bourg-en-Bresse --debut 2026-07-10 --fin 2026-07-12 --carte-jeune --pages 3
+
+# Une date précise, en trajets fractionnés (graphe TGV)
+python sncf_scraper.py Brest Bourg-en-Bresse --dates 2026-07-11 --split
+
+# Plage de dates + export CSV
+python sncf_scraper.py Paris Lyon --debut 2026-07-11 --fin 2026-07-13 --csv prix.csv
+```
+| Option | Rôle |
+|---|---|
+| `origine` `destination` | villes (positionnels) |
+| `--debut` / `--fin` | plage de dates (ou `--dates J1 J2 …`) |
+| `--carte-jeune` | applique la Carte Avantage Jeune |
+| `--heure` | heure de référence (`06h`, `08h`…) |
+| `--pages` | pagination : trains/jour (`3` = journée) |
+| `--split` / `--max-h` | trajets fractionnés via graphe TGV, durée totale max |
+| `--concurrency` | recherches simultanées |
+| `--csv` | export CSV |
+
+`python sncf_scraper.py --help` pour le détail.
+
 ## Comment ça marche
 1. **Chromium furtif** (playwright-stealth + UA réaliste) avec **profil persistant**
    (`./browser_profile`) qui conserve le cookie DataDome.

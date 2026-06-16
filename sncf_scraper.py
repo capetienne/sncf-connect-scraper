@@ -24,7 +24,7 @@ import os
 import random
 import re
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BASE = Path(__file__).parent
@@ -508,11 +508,88 @@ async def split_search(routes, date, carte_jeune=True, heure="06h",
     return combine_splits(rows, routes, min_layover_min, max_layover_min, max_total_h)
 
 
-if __name__ == "__main__":
-    res = asyncio.run(compare_dates(
-        "Brest", "Bourg-en-Bresse",
-        ["2026-07-10", "2026-07-11", "2026-07-12"],
-    ))
+def _date_range(debut, fin):
+    d0 = datetime.strptime(debut, "%Y-%m-%d")
+    d1 = datetime.strptime(fin or debut, "%Y-%m-%d")
+    out = []
+    while d0 <= d1:
+        out.append(d0.strftime("%Y-%m-%d"))
+        d0 += timedelta(days=1)
+    return out
+
+
+def _cli():
+    import argparse
     import pandas as pd
-    df = pd.DataFrame(res)
-    print(df.to_string(index=False) if not df.empty else "Aucun résultat.")
+
+    ap = argparse.ArgumentParser(
+        description="Comparateur de prix SNCF Connect (parallèle, carte, pagination, split TGV).",
+        epilog="Exemples :\n"
+               "  python sncf_scraper.py Brest Bourg-en-Bresse --debut 2026-07-10 --fin 2026-07-12 --carte-jeune\n"
+               "  python sncf_scraper.py Brest Bourg-en-Bresse --dates 2026-07-11 --split\n"
+               "  python sncf_scraper.py Paris Lyon --debut 2026-07-11 --pages 3 --csv prix.csv",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("origine", help="ville de départ (ex. Brest)")
+    ap.add_argument("destination", help="ville d'arrivée (ex. Bourg-en-Bresse)")
+    ap.add_argument("--debut", help="date de début AAAA-MM-JJ")
+    ap.add_argument("--fin", help="date de fin AAAA-MM-JJ (défaut = début)")
+    ap.add_argument("--dates", nargs="+", help="dates explicites AAAA-MM-JJ (au lieu de --debut/--fin)")
+    ap.add_argument("--carte-jeune", action="store_true", help="appliquer la Carte Avantage Jeune")
+    ap.add_argument("--heure", default="06h", help="heure de départ de référence (06h, 08h… défaut 06h)")
+    ap.add_argument("--pages", type=int, default=2, help="pagination : trains/jour (défaut 2 ; 3 = journée)")
+    ap.add_argument("--concurrency", type=int, default=3, help="recherches simultanées (défaut 3)")
+    ap.add_argument("--split", action="store_true", help="trajets fractionnés via graphe TGV")
+    ap.add_argument("--max-h", type=float, default=14.0, help="durée totale max en heures (split, défaut 14)")
+    ap.add_argument("--csv", help="exporter le résultat dans ce fichier CSV")
+    args = ap.parse_args()
+
+    if args.dates:
+        dates = args.dates
+    elif args.debut:
+        dates = _date_range(args.debut, args.fin)
+    else:
+        ap.error("préciser --dates ou --debut [--fin]")
+
+    async def run():
+        if args.split:
+            rows = []
+            for d in dates:
+                res = await auto_split_search(
+                    args.origine, args.destination, d,
+                    carte_jeune=args.carte_jeune, heure=args.heure, max_pages=args.pages,
+                    max_total_h=args.max_h, concurrency=args.concurrency)
+                for r in res:
+                    r["date"] = d
+                rows += res
+            return rows, ["date", "route", "prix_total", "depart", "arrivee",
+                          "duree_totale", "correspondances"]
+        rows = await compare_dates(
+            args.origine, args.destination, dates,
+            carte_jeune=args.carte_jeune, concurrency=args.concurrency, max_pages=args.pages)
+        return rows, ["date", "origine", "destination", "depart", "arrivee",
+                      "duree", "correspondances", "prix_eur"]
+
+    rows, cols = asyncio.run(run())
+    df = pd.DataFrame(rows)
+    if df.empty:
+        print("Aucun résultat.")
+        return
+    cols = [c for c in cols if c in df.columns]
+    pcol = "prix_total" if "prix_total" in df.columns else "prix_eur"
+    df = df.sort_values(["date", pcol]).reset_index(drop=True)
+    pd.set_option("display.width", 240)
+    pd.set_option("display.max_colwidth", 120)
+    print(df[cols].to_string(index=False))
+    cheapest = df.loc[df[pcol].notna()].nsmallest(1, pcol)
+    if not cheapest.empty:
+        c = cheapest.iloc[0]
+        lbl = c["route"] if "route" in df.columns else f'{c["depart"]}→{c["arrivee"]}'
+        print(f"\n💸 Moins cher : {c[pcol]} € — {c['date']} — {lbl}")
+    if args.csv:
+        df.to_csv(args.csv, index=False)
+        print(f"CSV : {args.csv}")
+
+
+if __name__ == "__main__":
+    _cli()
