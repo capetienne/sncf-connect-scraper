@@ -564,6 +564,20 @@ CITY_COORDS = {
     "Nice": (43.70, 7.27), "Genève": (46.20, 6.14),
 }
 
+# Contour simplifié de la France métropolitaine (lat, lon), projeté comme les villes
+FRANCE_BORDER = [
+    (51.03, 2.37), (50.95, 1.85), (50.12, 1.55), (49.70, 0.20), (49.43, -0.40),
+    (49.40, -1.00), (49.72, -1.55), (49.30, -1.62), (48.65, -1.52), (48.72, -2.80),
+    (48.70, -3.95), (48.40, -4.78), (48.03, -4.72), (47.80, -4.05), (47.52, -3.10),
+    (47.28, -2.50), (46.50, -1.80), (45.75, -1.20), (44.65, -1.25), (43.55, -1.55),
+    (43.30, -1.45), (42.80, -0.70), (42.70, 0.65), (42.48, 1.45), (42.45, 2.02),
+    (42.72, 3.03), (43.20, 3.05), (43.45, 3.95), (43.38, 4.85), (43.28, 5.38),
+    (43.10, 6.00), (43.55, 6.95), (43.75, 7.52), (44.15, 7.00), (44.85, 6.90),
+    (45.13, 6.63), (45.90, 6.80), (46.25, 6.30), (46.40, 6.10), (47.40, 7.00),
+    (47.62, 7.55), (48.32, 7.60), (48.97, 8.22), (49.50, 6.60), (49.80, 4.85),
+    (50.35, 4.20), (50.50, 3.60), (51.00, 2.55),
+]
+
 
 def candidate_routes(origin, dest, max_legs=3, max_routes=8, graph=TGV_GRAPH):
     """Trouve les routes (chemins simples) de origin à dest dans le graphe TGV.
@@ -781,6 +795,10 @@ def _france_map_svg(routes):
         return ((lon - LON[0]) / (LON[1] - LON[0]) * W,
                 (LAT[1] - lat) / (LAT[1] - LAT[0]) * H)
 
+    bpts = [proj(lat, lon) for lat, lon in FRANCE_BORDER]
+    border = ('<path class="border" d="M ' + " L ".join(f"{x:.0f} {y:.0f}" for x, y in bpts)
+              + ' Z"/>')
+
     edges, seen = "", set()
     for a, nbrs in TGV_GRAPH.items():
         if a not in CITY_COORDS:
@@ -818,7 +836,7 @@ def _france_map_svg(routes):
     leg = "".join(f'<span><i style="background:{c}"></i>{_esc(lbl)}</span>'
                   for _cities, c, lbl in routes)
     return (f'<div class="map"><svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet">'
-            f'{edges}{paths}{dots}</svg><div class="legend">{leg}</div></div>')
+            f'{border}{edges}{paths}{dots}</svg><div class="legend">{leg}</div></div>')
 
 
 def to_html_report(aller_rows, path="resultats.html", title="Trajets SNCF Connect", retour_rows=None):
@@ -906,6 +924,7 @@ tr.detail td{{background:#0d1124;padding:12px 18px}}
 .map{{background:radial-gradient(120% 120% at 50% 10%,#171d3c,#0e1228);border:1px solid #2a3160;
 border-radius:14px;padding:10px;margin-bottom:18px;position:relative}}
 .map svg{{width:100%;height:auto;max-height:560px;display:block}}
+.border{{fill:rgba(70,95,165,.10);stroke:#4a5a93;stroke-width:1.5;stroke-linejoin:round}}
 .edge{{stroke:#2b3361;stroke-width:1}}
 .city{{fill:#56619c}}.city.on{{fill:var(--acc);filter:drop-shadow(0 0 6px var(--acc))}}
 .lbl{{fill:#dfe4ff;font-size:12px;font-weight:600;paint-order:stroke;stroke:#0e1228;stroke-width:3px}}
