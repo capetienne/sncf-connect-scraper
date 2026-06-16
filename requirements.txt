@@ -1,6 +1,7 @@
 playwright>=1.40
 playwright-stealth>=2.0
 pandas>=2.0
+flask>=3.0          # appli web (app.py)
 # Pour le notebook (facultatif si usage en CLI/module) :
 jupyterlab>=4.0
 ipykernel>=6.0

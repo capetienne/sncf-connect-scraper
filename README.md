@@ -43,6 +43,15 @@ best = asyncio.run(s.auto_split_search('Brest', 'Bourg-en-Bresse', '2026-07-11',
 ```
 Ou ouvrir le notebook : `jupyter lab comparateur_sncf.ipynb`.
 
+## Application web (formulaire interactif)
+```bash
+python app.py            # puis ouvrir http://127.0.0.1:5000
+```
+Un formulaire (ville de départ/arrivée, dates aller/retour, Carte Avantage Jeune, fractionné,
+pagination, navigateurs) → lance la recherche → affiche le **rapport HTML** (onglets Aller/Retour,
+prix aller-retour, lignes dépliables avec n° de trains et correspondances).
+⚠️ Une fenêtre Chrome visible s'ouvre (DataDome) ; ~30-90 s selon le nombre de dates.
+
 ## En ligne de commande (CLI)
 ```bash
 # Comparer une plage de dates, avec Carte Avantage Jeune, journée complète
