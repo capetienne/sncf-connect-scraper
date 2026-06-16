@@ -1,0 +1,6 @@
+playwright>=1.40
+playwright-stealth>=2.0
+pandas>=2.0
+# Pour le notebook (facultatif si usage en CLI/module) :
+jupyterlab>=4.0
+ipykernel>=6.0

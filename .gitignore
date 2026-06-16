@@ -1,0 +1,23 @@
+# Environnements / dépendances
+.venv/
+__pycache__/
+*.pyc
+
+# Profil navigateur (contient des COOKIES de session DataDome — ne pas publier)
+browser_profile/
+
+# Sorties de debug (screenshots pouvant contenir une IP, JSON bruts, exports)
+raw/
+*.csv
+
+# Bibliothèques système extraites localement (lourd, spécifique machine)
+syslibs/
+
+# Dépôts tiers clonés pour évaluation
+alt_libs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
