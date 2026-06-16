@@ -307,9 +307,14 @@ async def _run_flow(page: Page, origine: str, destination: str, date: str,
     journeys: list[Journey] = []
     for data in captured:
         journeys.extend(parse_itineraries(data, date, origine, destination))
-    seen = {}
+    # dédoublonnage : garder la version la PLUS RICHE (certaines réponses n'ont ni prix ni détail)
+    seen: dict = {}
     for j in journeys:
-        seen[(j.depart, j.arrivee)] = j
+        key = (j.depart, j.arrivee)
+        prev = seen.get(key)
+        if prev is None or (not prev.segments and j.segments) \
+                or (prev.prix_eur is None and j.prix_eur is not None):
+            seen[key] = j
     return sorted(seen.values(), key=lambda x: x.depart)
 
 
@@ -548,6 +553,17 @@ TGV_GRAPH = {
     "Grenoble": ["Lyon", "Paris"],
 }
 
+# Coordonnées (lat, lon) pour la carte de France
+CITY_COORDS = {
+    "Brest": (48.39, -4.49), "Quimper": (47.99, -4.10), "Rennes": (48.11, -1.68),
+    "Nantes": (47.22, -1.55), "Angers": (47.47, -0.55), "Le Mans": (48.00, 0.20),
+    "Tours": (47.39, 0.69), "Paris": (48.85, 2.35), "Lille": (50.63, 3.06),
+    "Strasbourg": (48.58, 7.75), "Dijon": (47.32, 5.04), "Lyon": (45.76, 4.84),
+    "Bourg-en-Bresse": (46.20, 5.23), "Grenoble": (45.19, 5.72), "Marseille": (43.30, 5.37),
+    "Montpellier": (43.61, 3.88), "Bordeaux": (44.84, -0.58), "Toulouse": (43.60, 1.44),
+    "Nice": (43.70, 7.27), "Genève": (46.20, 6.14),
+}
+
 
 def candidate_routes(origin, dest, max_legs=3, max_routes=8, graph=TGV_GRAPH):
     """Trouve les routes (chemins simples) de origin à dest dans le graphe TGV.
@@ -725,6 +741,86 @@ def _table_html(rows, tab_id):
     return f"<table><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table>"
 
 
+def _city_from_station(label):
+    """Mappe un libellé de gare ('Paris - Gare De Lyon') vers une ville connue de CITY_COORDS."""
+    if not label:
+        return None
+    base = str(label).split(" - ")[0].split("(")[0].strip()
+    for k in CITY_COORDS:
+        if k.lower() == base.lower():
+            return k
+    for k in CITY_COORDS:
+        if k.lower() in base.lower():
+            return k
+    return None
+
+
+def _journey_cities(row):
+    """Suite des villes traversées par un trajet (pour la carte)."""
+    if row.get("route"):
+        cities = [c.strip() for c in str(row["route"]).split("→")]
+    else:
+        segs = [s for s in (row.get("segments") or []) if s.get("kind") == "train"]
+        if segs:
+            cities = [_city_from_station(segs[0]["de"])] + [_city_from_station(s["a"]) for s in segs]
+        else:
+            cities = [row.get("origine"), row.get("destination")]
+    out = []
+    for c in cities:                                     # canonise + retire les doublons consécutifs
+        c = c if c in CITY_COORDS else _city_from_station(c)
+        if c and (not out or out[-1] != c):
+            out.append(c)
+    return out
+
+
+def _france_map_svg(routes):
+    """SVG d'une carte de France : réseau TGV en fond + trajets animés (train en mouvement)."""
+    LON, LAT, W, H = (-5.2, 8.7), (41.3, 51.2), 560, 600
+
+    def proj(lat, lon):
+        return ((lon - LON[0]) / (LON[1] - LON[0]) * W,
+                (LAT[1] - lat) / (LAT[1] - LAT[0]) * H)
+
+    edges, seen = "", set()
+    for a, nbrs in TGV_GRAPH.items():
+        if a not in CITY_COORDS:
+            continue
+        ax, ay = proj(*CITY_COORDS[a])
+        for b in nbrs:
+            if b not in CITY_COORDS or tuple(sorted((a, b))) in seen:
+                continue
+            seen.add(tuple(sorted((a, b))))
+            bx, by = proj(*CITY_COORDS[b])
+            edges += f'<line x1="{ax:.0f}" y1="{ay:.0f}" x2="{bx:.0f}" y2="{by:.0f}" class="edge"/>'
+
+    on = set()
+    for cities, _c, _lbl in routes:
+        on |= set(cities)
+    dots = ""
+    for c, (lat, lon) in CITY_COORDS.items():
+        x, y = proj(lat, lon)
+        if c in on:
+            dots += (f'<circle cx="{x:.0f}" cy="{y:.0f}" r="5" class="city on"/>'
+                     f'<text x="{x + 9:.0f}" y="{y + 4:.0f}" class="lbl">{_esc(c)}</text>')
+        else:
+            dots += f'<circle cx="{x:.0f}" cy="{y:.0f}" r="2.5" class="city"/>'
+
+    paths = ""
+    for i, (cities, color, _lbl) in enumerate(routes):
+        pts = [proj(*CITY_COORDS[c]) for c in cities if c in CITY_COORDS]
+        if len(pts) < 2:
+            continue
+        d = "M " + " L ".join(f"{x:.0f} {y:.0f}" for x, y in pts)
+        paths += (f'<path id="route{i}" d="{d}" class="route" style="stroke:{color}"/>'
+                  f'<circle r="5.5" fill="{color}" class="train">'
+                  f'<animateMotion dur="3.6s" repeatCount="indefinite" path="{d}"/></circle>')
+
+    leg = "".join(f'<span><i style="background:{c}"></i>{_esc(lbl)}</span>'
+                  for _cities, c, lbl in routes)
+    return (f'<div class="map"><svg viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet">'
+            f'{edges}{paths}{dots}</svg><div class="legend">{leg}</div></div>')
+
+
 def to_html_report(aller_rows, path="resultats.html", title="Trajets SNCF Connect", retour_rows=None):
     """Rapport HTML autonome : onglets Aller/Retour, prix A/R, lignes dépliables (n° trains…)."""
     from datetime import datetime as _dt
@@ -749,6 +845,18 @@ def to_html_report(aller_rows, path="resultats.html", title="Trajets SNCF Connec
                 f'<b>{_esc(lbl)}</b> · {_esc(ba["depart"])}→{_esc(ba["arrivee"])}</div></div>')
     else:
         hero = ""
+
+    # carte de France : trajet le moins cher (aller en vert, retour en orange)
+    map_routes = []
+    if ba:
+        ca = _journey_cities(ba)
+        if len(ca) >= 2:
+            map_routes.append((ca, "#37d4a7", "🛫 Aller"))
+    if has_retour and br:
+        cr = _journey_cities(br)
+        if len(cr) >= 2:
+            map_routes.append((cr, "#f4a13c", "🛬 Retour"))
+    map_html = _france_map_svg(map_routes) if map_routes else ""
 
     if has_retour:
         tabs = ('<div class="tabs"><button class="tab active" id="tab-aller" '
@@ -795,11 +903,24 @@ tr.detail td{{background:#0d1124;padding:12px 18px}}
 .tno{{font-weight:700;color:var(--acc)}}.ttype{{color:var(--mut);margin-left:8px;font-size:12px}}
 .corresp{{color:var(--mut);font-size:12.5px;font-style:italic;padding:3px 0 3px 12px}}
 .muted{{color:var(--mut)}}
+.map{{background:radial-gradient(120% 120% at 50% 10%,#171d3c,#0e1228);border:1px solid #2a3160;
+border-radius:14px;padding:10px;margin-bottom:18px;position:relative}}
+.map svg{{width:100%;height:auto;max-height:560px;display:block}}
+.edge{{stroke:#2b3361;stroke-width:1}}
+.city{{fill:#56619c}}.city.on{{fill:var(--acc);filter:drop-shadow(0 0 6px var(--acc))}}
+.lbl{{fill:#dfe4ff;font-size:12px;font-weight:600;paint-order:stroke;stroke:#0e1228;stroke-width:3px}}
+.route{{fill:none;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round;
+stroke-dasharray:9 9;animation:flow 1s linear infinite;filter:drop-shadow(0 0 4px rgba(55,212,167,.5))}}
+@keyframes flow{{to{{stroke-dashoffset:-36}}}}
+.train{{filter:drop-shadow(0 0 6px #fff)}}
+.legend{{position:absolute;top:14px;left:14px;font-size:12px;color:var(--mut);display:flex;gap:14px}}
+.legend span{{display:flex;align-items:center;gap:6px}}
+.legend i{{width:14px;height:4px;border-radius:2px;display:inline-block}}
 .foot{{color:var(--mut);font-size:12px;margin-top:14px;text-align:center}}
 </style></head><body><div class="wrap">
 <h1>🚆 {_esc(title)}</h1>
 <div class="sub">{n} trajets · généré le {generated} · clique une ligne pour le détail</div>
-{hero}{tabs}
+{hero}{map_html}{tabs}
 <div class="foot">Prix « dès », 2de classe · source SNCF Connect (non officiel)</div>
 </div><script>
 function tog(id){{document.getElementById(id).classList.toggle('open');}}
