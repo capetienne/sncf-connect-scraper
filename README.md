@@ -111,6 +111,14 @@ L'anti-bot bloque le scraping « classique ». Il faut réunir :
 3. **Profil persistant** : à la 1re visite, résoudre une fois le slider captcha à la main dans la
    fenêtre Chromium ; le cookie est ensuite réutilisé.
 
+### Bloqué (« Accès temporairement restreint ») ? Récupération
+DataDome se braque si on enchaîne trop de requêtes, surtout avec **plusieurs navigateurs**
+(`--browsers >1`) partageant le même cookie + la même IP. Pour repartir :
+1. **Change d'IP** : mode avion ~10 s sur le téléphone (ou re-partage de connexion) → nouvelle IP.
+2. **Revalide** : `python warmup.py` rouvre le site ; résous le slider une fois si besoin → le cookie
+   se rafraîchit pour les recherches suivantes.
+3. **Sois plus doux** : reste sur `--browsers 1`, baisse `--concurrency`, ne mitraille pas.
+
 ### Note WSL / sans sudo
 Le module auto-règle `DISPLAY=:0` (affichage WSLg) et, si présent, un dossier `syslibs/` de libs
 Chromium extraites localement — utile quand `playwright install-deps` (sudo) n'est pas disponible.
