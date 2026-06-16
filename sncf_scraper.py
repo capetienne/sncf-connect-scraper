@@ -306,7 +306,7 @@ async def search_journeys(origine, destination, date, headless=False,
 
 
 async def search_many(queries, headless=False, carte_jeune=False,
-                      concurrency=3, timeout_ms=60000, heure="06h", max_pages=2) -> list[dict]:
+                      concurrency=5, timeout_ms=60000, heure="06h", max_pages=2) -> list[dict]:
     """Lance PLUSIEURS recherches en parallèle (onglets) dans un seul navigateur.
 
     queries : liste de (origine, destination, date). Renvoie une liste de dicts.
@@ -342,7 +342,7 @@ async def search_many(queries, headless=False, carte_jeune=False,
 
 
 async def compare_dates(origine, destination, dates, headless=False,
-                        carte_jeune=False, parallel=True, concurrency=3, max_pages=2) -> list[dict]:
+                        carte_jeune=False, parallel=True, concurrency=5, max_pages=2) -> list[dict]:
     """Recherche pour plusieurs dates. `parallel=True` -> onglets simultanés (rapide)."""
     queries = [(origine, destination, d) for d in dates]
     if parallel:
@@ -491,7 +491,7 @@ async def auto_split_search(origin, dest, date, max_legs=3, max_routes=8, **kwar
 
 async def split_search(routes, date, carte_jeune=True, heure="06h",
                        min_layover_min=30, max_layover_min=300, max_total_h=14,
-                       concurrency=4, headless=False, max_pages=2) -> list[dict]:
+                       concurrency=5, headless=False, max_pages=2) -> list[dict]:
     """Cherche le meilleur trajet fractionné parmi plusieurs routes pour une date.
 
     routes : liste de routes ; chaque route = liste de segments (A,B), ex.
@@ -506,6 +506,29 @@ async def split_search(routes, date, carte_jeune=True, heure="06h",
     rows = await search_many(queries, headless=headless, carte_jeune=carte_jeune,
                              concurrency=concurrency, heure=heure, max_pages=max_pages)
     return combine_splits(rows, routes, min_layover_min, max_layover_min, max_total_h)
+
+
+async def auto_split_dates(origin, dest, dates, max_legs=3, max_routes=8,
+                           carte_jeune=True, heure="06h", max_pages=2,
+                           min_layover_min=30, max_layover_min=300, max_total_h=14,
+                           concurrency=5, headless=False) -> list[dict]:
+    """Split-ticketing sur PLUSIEURS dates en un seul lot parallèle (segments × dates aplatis)."""
+    routes = candidate_routes(origin, dest, max_legs=max_legs, max_routes=max_routes)
+    print("Routes candidates :")
+    for r in routes:
+        print("  •", " → ".join([r[0][0]] + [b for _, b in r]))
+    legs = {leg for r in routes for leg in r}
+    queries = [(a, b, d) for d in dates for (a, b) in legs]
+    print(f"{len(queries)} recherches (segments × dates) en parallèle…")
+    rows = await search_many(queries, headless=headless, carte_jeune=carte_jeune,
+                             concurrency=concurrency, heure=heure, max_pages=max_pages)
+    out = []
+    for d in dates:
+        drows = [r for r in rows if r["date"] == d]
+        for combo in combine_splits(drows, routes, min_layover_min, max_layover_min, max_total_h):
+            combo["date"] = d
+            out.append(combo)
+    return out
 
 
 def _date_range(debut, fin):
@@ -538,7 +561,7 @@ def _cli():
     ap.add_argument("--carte-jeune", action="store_true", help="appliquer la Carte Avantage Jeune")
     ap.add_argument("--heure", default="06h", help="heure de départ de référence (06h, 08h… défaut 06h)")
     ap.add_argument("--pages", type=int, default=2, help="pagination : trains/jour (défaut 2 ; 3 = journée)")
-    ap.add_argument("--concurrency", type=int, default=3, help="recherches simultanées (défaut 3)")
+    ap.add_argument("--concurrency", type=int, default=5, help="recherches simultanées (défaut 5)")
     ap.add_argument("--split", action="store_true", help="trajets fractionnés via graphe TGV")
     ap.add_argument("--max-h", type=float, default=14.0, help="durée totale max en heures (split, défaut 14)")
     ap.add_argument("--csv", help="exporter le résultat dans ce fichier CSV")
@@ -553,15 +576,10 @@ def _cli():
 
     async def run():
         if args.split:
-            rows = []
-            for d in dates:
-                res = await auto_split_search(
-                    args.origine, args.destination, d,
-                    carte_jeune=args.carte_jeune, heure=args.heure, max_pages=args.pages,
-                    max_total_h=args.max_h, concurrency=args.concurrency)
-                for r in res:
-                    r["date"] = d
-                rows += res
+            rows = await auto_split_dates(
+                args.origine, args.destination, dates,
+                carte_jeune=args.carte_jeune, heure=args.heure, max_pages=args.pages,
+                max_total_h=args.max_h, concurrency=args.concurrency)
             return rows, ["date", "route", "prix_total", "depart", "arrivee",
                           "duree_totale", "correspondances"]
         rows = await compare_dates(
