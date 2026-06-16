@@ -68,7 +68,8 @@ python sncf_scraper.py Brest Bourg-en-Bresse --debut 2026-07-10 --fin 2026-07-12
 | `--split` / `--max-h` | trajets fractionnés via graphe TGV, durée totale max |
 | `--concurrency` | onglets simultanés par navigateur |
 | `--browsers` | navigateurs parallèles (copies du profil) — débit max |
-| `--csv` / `--html` | export CSV / rapport HTML (table triable, prix colorés) |
+| `--retour` / `--retour-dates` / `--retour-debut/-fin` | chercher aussi le retour (onglet + prix A/R) |
+| `--csv` / `--html` | export CSV / rapport HTML (onglets A/R, détail cliquable, prix colorés) |
 
 `python sncf_scraper.py --help` pour le détail.
 
