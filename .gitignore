@@ -5,6 +5,10 @@ __pycache__/
 
 # Profil navigateur (contient des COOKIES de session DataDome — ne pas publier)
 browser_profile/
+browser_profile_w*/
+
+# Rapports générés
+*.html
 
 # Sorties de debug (screenshots pouvant contenir une IP, JSON bruts, exports)
 raw/

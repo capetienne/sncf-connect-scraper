@@ -23,6 +23,7 @@ import json
 import os
 import random
 import re
+import shutil
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -306,12 +307,18 @@ async def search_journeys(origine, destination, date, headless=False,
 
 
 async def search_many(queries, headless=False, carte_jeune=False,
-                      concurrency=5, timeout_ms=60000, heure="06h", max_pages=2) -> list[dict]:
+                      concurrency=5, timeout_ms=60000, heure="06h", max_pages=2,
+                      n_browsers=1) -> list[dict]:
     """Lance PLUSIEURS recherches en parallèle (onglets) dans un seul navigateur.
 
     queries : liste de (origine, destination, date). Renvoie une liste de dicts.
     Un seul contexte persistant = un seul cookie DataDome partagé ; `concurrency` onglets max.
+    `n_browsers>1` -> délègue à search_many_multi (N navigateurs × `concurrency` onglets).
     """
+    if n_browsers > 1:
+        return await search_many_multi(queries, n_browsers=n_browsers, concurrency_per=concurrency,
+                                       headless=headless, carte_jeune=carte_jeune,
+                                       heure=heure, max_pages=max_pages, timeout_ms=timeout_ms)
     pw_cm, _p, ctx = await _with_context(headless)
     sem = asyncio.Semaphore(concurrency)
     rows: list[dict] = []
@@ -341,13 +348,73 @@ async def search_many(queries, headless=False, carte_jeune=False,
     return rows
 
 
-async def compare_dates(origine, destination, dates, headless=False,
-                        carte_jeune=False, parallel=True, concurrency=5, max_pages=2) -> list[dict]:
+async def _run_queries_on_context(ctx, chunk, sem, carte_jeune, heure, max_pages, timeout_ms):
+    async def one(q):
+        origine, destination, date = q
+        async with sem:
+            page = await ctx.new_page()
+            try:
+                js = await _run_flow(page, origine, destination, date,
+                                     carte_jeune, timeout_ms, heure, max_pages)
+                n = sum(1 for j in js if j.prix_eur is not None)
+                print(f"✓ {origine}→{destination} {date} : {len(js)} trajet(s), {n} prix")
+                return [j.as_dict() for j in js]
+            except Exception as e:
+                print(f"✗ {origine}→{destination} {date} : {type(e).__name__}: {e}")
+                return []
+            finally:
+                await page.close()
+    res = await asyncio.gather(*[one(q) for q in chunk])
+    return [r for sub in res for r in sub]
+
+
+async def search_many_multi(queries, n_browsers=2, concurrency_per=3, headless=False,
+                            carte_jeune=False, heure="06h", max_pages=2, timeout_ms=60000):
+    """Parallélisme maximal : N NAVIGATEURS (copies du profil) × `concurrency_per` onglets.
+
+    Dépasse la limite d'un seul navigateur en copiant `browser_profile` (cookie DataDome inclus)
+    en N exemplaires. ⚠️ même cookie + même IP en parallèle : DataDome peut réagir -> tester.
+    """
+    n_browsers = max(1, min(n_browsers, len(queries)))
+    chunks = [queries[i::n_browsers] for i in range(n_browsers)]   # répartition round-robin
+    pw_cm = _STEALTH.use_async(async_playwright()) if _STEALTH else async_playwright()
+    rows: list[dict] = []
+
+    async with pw_cm as p:
+        async def run_browser(chunk, idx):
+            if not chunk:
+                return []
+            dst = f"{PROFILE_DIR}_w{idx}"
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(PROFILE_DIR, dst, symlinks=True,           # copie le cookie DataDome
+                            ignore=shutil.ignore_patterns("Singleton*", "*lock*", "*.lock"))
+            ctx = await p.chromium.launch_persistent_context(
+                dst, headless=headless, user_agent=UA, locale="fr-FR",
+                timezone_id="Europe/Paris", viewport={"width": 1366, "height": 900},
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+            try:
+                sem = asyncio.Semaphore(concurrency_per)
+                return await _run_queries_on_context(ctx, chunk, sem, carte_jeune,
+                                                     heure, max_pages, timeout_ms)
+            finally:
+                await ctx.close()
+                shutil.rmtree(dst, ignore_errors=True)
+
+        print(f"{n_browsers} navigateur(s) × {concurrency_per} onglet(s) = "
+              f"{n_browsers * concurrency_per} recherches simultanées")
+        results = await asyncio.gather(*[run_browser(c, i) for i, c in enumerate(chunks)])
+    for r in results:
+        rows.extend(r)
+    return rows
+
+
+async def compare_dates(origine, destination, dates, headless=False, carte_jeune=False,
+                        parallel=True, concurrency=5, max_pages=2, n_browsers=1) -> list[dict]:
     """Recherche pour plusieurs dates. `parallel=True` -> onglets simultanés (rapide)."""
     queries = [(origine, destination, d) for d in dates]
     if parallel:
         return await search_many(queries, headless=headless, carte_jeune=carte_jeune,
-                                 concurrency=concurrency, max_pages=max_pages)
+                                 concurrency=concurrency, max_pages=max_pages, n_browsers=n_browsers)
     rows = []
     for q in queries:
         rows.extend(await search_many([q], headless=headless, carte_jeune=carte_jeune,
@@ -511,7 +578,7 @@ async def split_search(routes, date, carte_jeune=True, heure="06h",
 async def auto_split_dates(origin, dest, dates, max_legs=3, max_routes=8,
                            carte_jeune=True, heure="06h", max_pages=2,
                            min_layover_min=30, max_layover_min=300, max_total_h=14,
-                           concurrency=5, headless=False) -> list[dict]:
+                           concurrency=5, headless=False, n_browsers=1) -> list[dict]:
     """Split-ticketing sur PLUSIEURS dates en un seul lot parallèle (segments × dates aplatis)."""
     routes = candidate_routes(origin, dest, max_legs=max_legs, max_routes=max_routes)
     print("Routes candidates :")
@@ -521,7 +588,8 @@ async def auto_split_dates(origin, dest, dates, max_legs=3, max_routes=8,
     queries = [(a, b, d) for d in dates for (a, b) in legs]
     print(f"{len(queries)} recherches (segments × dates) en parallèle…")
     rows = await search_many(queries, headless=headless, carte_jeune=carte_jeune,
-                             concurrency=concurrency, heure=heure, max_pages=max_pages)
+                             concurrency=concurrency, heure=heure, max_pages=max_pages,
+                             n_browsers=n_browsers)
     out = []
     for d in dates:
         drows = [r for r in rows if r["date"] == d]
@@ -529,6 +597,115 @@ async def auto_split_dates(origin, dest, dates, max_legs=3, max_routes=8,
             combo["date"] = d
             out.append(combo)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Visualisation HTML
+# --------------------------------------------------------------------------- #
+def to_html_report(rows, path="resultats.html", title="Trajets SNCF Connect"):
+    """Génère un rapport HTML autonome (table triable, prix colorés) à partir des résultats."""
+    import html as _html
+    import pandas as pd
+    from datetime import datetime as _dt
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        Path(path).write_text("<h1>Aucun résultat</h1>", encoding="utf-8")
+        return path
+
+    split = "route" in df.columns
+    pcol = "prix_total" if split else "prix_eur"
+    df = df.sort_values(["date", pcol], na_position="last").reset_index(drop=True)
+    prices = df[pcol].dropna()
+    pmin, pmax = (float(prices.min()), float(prices.max())) if not prices.empty else (0, 1)
+    best = df.loc[df[pcol].notna()].nsmallest(1, pcol).iloc[0] if not prices.empty else None
+    mins_par_date = df.loc[df[pcol].notna()].groupby("date")[pcol].min().to_dict()
+
+    def cell(v):
+        return _html.escape("" if v is None or (isinstance(v, float) and v != v) else str(v))
+
+    if split:
+        head = ["Route", "Départ", "Arrivée", "Durée", "Corresp.", "Prix"]
+        getrow = lambda r: [r["route"], r["depart"], r["arrivee"], r["duree_totale"],
+                            r["correspondances"], r[pcol]]
+    else:
+        head = ["Trajet", "Départ", "Arrivée", "Durée", "Corresp.", "Prix"]
+        getrow = lambda r: [f'{r["origine"]} → {r["destination"]}', r["depart"], r["arrivee"],
+                            r["duree"], r["correspondances"], r[pcol]]
+
+    body = ""
+    current_date = None
+    for _, r in df.iterrows():
+        if r["date"] != current_date:
+            current_date = r["date"]
+            body += f'<tr class="date-row"><td colspan="6">📅 {cell(current_date)}</td></tr>'
+        c = getrow(r)
+        price = c[-1]
+        has_price = not (price is None or (isinstance(price, float) and price != price))
+        is_best = has_price and abs(float(price) - mins_par_date.get(r["date"], -1)) < 1e-6
+        if has_price:
+            frac = 0 if pmax == pmin else (float(price) - pmin) / (pmax - pmin)
+            bar = int(100 * (1 - frac))            # barre + longue = moins cher
+            ptxt = f'{float(price):.2f} €'
+            pcell = (f'<div class="bar" style="width:{bar}%"></div>'
+                     f'<span class="ptxt">{ptxt}</span>')
+        else:
+            pcell = '<span class="na">non réservable</span>'
+        cls = ' class="best"' if is_best else ""
+        body += (f"<tr{cls}><td class='route'>{cell(c[0])}</td><td>{cell(c[1])}</td>"
+                 f"<td>{cell(c[2])}</td><td>{cell(c[3])}</td><td class='c'>{cell(c[4])}</td>"
+                 f"<td class='price'>{pcell}</td></tr>")
+
+    best_html = ""
+    if best is not None:
+        lbl = best["route"] if split else f'{best["origine"]} → {best["destination"]}'
+        best_html = (f'<div class="hero"><div class="hero-price">{float(best[pcol]):.2f} €</div>'
+                     f'<div class="hero-info">🏆 Moins cher — {cell(best["date"])}<br>'
+                     f'<b>{cell(lbl)}</b> · {cell(best["depart"])}→{cell(best["arrivee"])}</div></div>')
+
+    th = "".join(f'<th onclick="sortT({i})">{h}</th>' for i, h in enumerate(head))
+    generated = _dt.now().strftime("%d/%m/%Y %H:%M")
+    doc = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_html.escape(title)}</title><style>
+:root{{--bg:#0f1226;--card:#1a1f3a;--ink:#e8ebff;--mut:#9aa3c7;--acc:#37d4a7;--best:#23314a}}
+*{{box-sizing:border-box}}body{{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;
+background:linear-gradient(160deg,#0f1226,#161a33);color:var(--ink);padding:24px}}
+.wrap{{max-width:1000px;margin:0 auto}}h1{{font-size:22px;margin:0 0 4px}}
+.sub{{color:var(--mut);font-size:13px;margin-bottom:18px}}
+.hero{{display:flex;align-items:center;gap:18px;background:var(--card);border:1px solid #2a3160;
+border-radius:14px;padding:18px 22px;margin-bottom:18px}}
+.hero-price{{font-size:34px;font-weight:800;color:var(--acc)}}
+.hero-info{{font-size:14px;line-height:1.5}}
+table{{width:100%;border-collapse:collapse;background:var(--card);border-radius:14px;overflow:hidden}}
+th,td{{padding:10px 12px;text-align:left;font-size:13.5px;border-bottom:1px solid #232a52}}
+th{{background:#222a52;cursor:pointer;user-select:none;position:sticky;top:0}}
+th:hover{{background:#2c356b}}
+.date-row td{{background:#11152e;color:var(--mut);font-weight:700;font-size:12.5px}}
+td.c{{text-align:center}}.route{{font-weight:600}}
+tr.best td{{background:var(--best)}}
+td.price{{position:relative;min-width:160px}}
+.bar{{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#1f6f57,#37d4a7);
+opacity:.30;border-radius:0}}
+.ptxt{{position:relative;font-weight:700}}.na{{color:#ff8da1;font-style:italic}}
+.foot{{color:var(--mut);font-size:12px;margin-top:14px;text-align:center}}
+</style></head><body><div class="wrap">
+<h1>🚆 {_html.escape(title)}</h1>
+<div class="sub">{len(df)} trajets · généré le {generated}</div>
+{best_html}
+<table id="t"><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table>
+<div class="foot">Prix « dès », 2de classe · source SNCF Connect (non officiel)</div>
+</div><script>
+function sortT(n){{const t=document.getElementById('t'),tb=t.tBodies[0];
+let rows=[...tb.querySelectorAll('tr:not(.date-row)')];
+const num=n>=4;rows.sort((a,b)=>{{let x=a.cells[n].innerText.replace(/[^0-9.,]/g,'').replace(',','.'),
+y=b.cells[n].innerText.replace(/[^0-9.,]/g,'').replace(',','.');
+return num?(parseFloat(x)||1e9)-(parseFloat(y)||1e9):x.localeCompare(y)}});
+rows.forEach(r=>tb.appendChild(r));
+[...tb.querySelectorAll('.date-row')].forEach(r=>tb.appendChild(r));}}
+</script></body></html>"""
+    Path(path).write_text(doc, encoding="utf-8")
+    return path
 
 
 def _date_range(debut, fin):
@@ -561,10 +738,13 @@ def _cli():
     ap.add_argument("--carte-jeune", action="store_true", help="appliquer la Carte Avantage Jeune")
     ap.add_argument("--heure", default="06h", help="heure de départ de référence (06h, 08h… défaut 06h)")
     ap.add_argument("--pages", type=int, default=2, help="pagination : trains/jour (défaut 2 ; 3 = journée)")
-    ap.add_argument("--concurrency", type=int, default=5, help="recherches simultanées (défaut 5)")
+    ap.add_argument("--concurrency", type=int, default=5, help="onglets simultanés par navigateur (défaut 5)")
+    ap.add_argument("--browsers", type=int, default=1, help="nb de navigateurs parallèles (copies du profil)")
     ap.add_argument("--split", action="store_true", help="trajets fractionnés via graphe TGV")
     ap.add_argument("--max-h", type=float, default=14.0, help="durée totale max en heures (split, défaut 14)")
     ap.add_argument("--csv", help="exporter le résultat dans ce fichier CSV")
+    ap.add_argument("--html", nargs="?", const="resultats.html",
+                    help="générer un rapport HTML (défaut resultats.html)")
     args = ap.parse_args()
 
     if args.dates:
@@ -579,12 +759,12 @@ def _cli():
             rows = await auto_split_dates(
                 args.origine, args.destination, dates,
                 carte_jeune=args.carte_jeune, heure=args.heure, max_pages=args.pages,
-                max_total_h=args.max_h, concurrency=args.concurrency)
+                max_total_h=args.max_h, concurrency=args.concurrency, n_browsers=args.browsers)
             return rows, ["date", "route", "prix_total", "depart", "arrivee",
                           "duree_totale", "correspondances"]
         rows = await compare_dates(
-            args.origine, args.destination, dates,
-            carte_jeune=args.carte_jeune, concurrency=args.concurrency, max_pages=args.pages)
+            args.origine, args.destination, dates, carte_jeune=args.carte_jeune,
+            concurrency=args.concurrency, max_pages=args.pages, n_browsers=args.browsers)
         return rows, ["date", "origine", "destination", "depart", "arrivee",
                       "duree", "correspondances", "prix_eur"]
 
@@ -607,6 +787,10 @@ def _cli():
     if args.csv:
         df.to_csv(args.csv, index=False)
         print(f"CSV : {args.csv}")
+    if args.html:
+        titre = f"{args.origine} → {args.destination}"
+        to_html_report(df.to_dict("records"), path=args.html, title=titre)
+        print(f"HTML : {args.html}")
 
 
 if __name__ == "__main__":

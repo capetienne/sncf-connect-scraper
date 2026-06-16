@@ -53,6 +53,10 @@ python sncf_scraper.py Brest Bourg-en-Bresse --dates 2026-07-11 --split
 
 # Plage de dates + export CSV
 python sncf_scraper.py Paris Lyon --debut 2026-07-11 --fin 2026-07-13 --csv prix.csv
+
+# Maximum de vitesse (2 navigateurs × 5 onglets) + rapport HTML
+python sncf_scraper.py Brest Bourg-en-Bresse --debut 2026-07-10 --fin 2026-07-12 \
+       --carte-jeune --pages 3 --browsers 2 --html resultats.html
 ```
 | Option | Rôle |
 |---|---|
@@ -62,8 +66,9 @@ python sncf_scraper.py Paris Lyon --debut 2026-07-11 --fin 2026-07-13 --csv prix
 | `--heure` | heure de référence (`06h`, `08h`…) |
 | `--pages` | pagination : trains/jour (`3` = journée) |
 | `--split` / `--max-h` | trajets fractionnés via graphe TGV, durée totale max |
-| `--concurrency` | recherches simultanées |
-| `--csv` | export CSV |
+| `--concurrency` | onglets simultanés par navigateur |
+| `--browsers` | navigateurs parallèles (copies du profil) — débit max |
+| `--csv` / `--html` | export CSV / rapport HTML (table triable, prix colorés) |
 
 `python sncf_scraper.py --help` pour le détail.
 
@@ -81,10 +86,12 @@ python sncf_scraper.py Paris Lyon --debut 2026-07-11 --fin 2026-07-13 --csv prix
 | Fonction | Rôle |
 |---|---|
 | `search_journeys(o, d, date, carte_jeune, heure, max_pages)` | un trajet, une date |
-| `search_many(queries, concurrency, …)` | N recherches en parallèle (onglets) |
+| `search_many(queries, concurrency, n_browsers, …)` | N recherches en parallèle (onglets) |
+| `search_many_multi(queries, n_browsers, concurrency_per)` | N **navigateurs** × onglets (débit max) |
 | `compare_dates(o, d, dates, parallel=True, …)` | comparaison multi-dates |
-| `auto_split_search(o, d, date, …)` | routes via graphe TGV + chaînage |
+| `auto_split_dates(o, d, dates, …)` | split-ticketing multi-dates en un lot |
 | `candidate_routes(o, d)` / `TGV_GRAPH` | graphe et génération de routes |
+| `to_html_report(rows, path)` | rapport HTML autonome |
 
 ## ⚠️ Passer DataDome (important)
 L'anti-bot bloque le scraping « classique ». Il faut réunir :
